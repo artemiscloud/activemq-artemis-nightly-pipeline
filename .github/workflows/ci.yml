@@ -1,0 +1,69 @@
+name: CI
+
+env:
+  IMAGE_NAME: activemq-artemis-operator
+
+on:
+  schedule:
+    - cron:  '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v2
+
+      - name: Checkout the repo
+        uses: actions/checkout@v2
+
+      - name: Cache go modules
+        uses: actions/cache@v2
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Cache maven repository
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.m2/repository
+            !~/.m2/repository/org/apache/activemq/artemis-*
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Checkout activemq-artemis
+        run: git clone https://${{ secrets.BOT_TOKEN }}@github.com/${{ github.repository_owner }}/activemq-artemis.git activemq-artemis
+
+      - name: Update activemq-artemis
+        run: |
+          git remote add upstream https://github.com/apache/activemq-artemis.git
+          git checkout master
+          git pull upstream master
+          git push origin master
+        working-directory: activemq-artemis
+
+      - name: Build activemq-artemis
+        run: mvn -DskipTests=true -Prelease clean package
+        working-directory: activemq-artemis
+
+      - name: Build broker-nightly-image
+        env:
+          ACTIVEMQ_ARTEMIS_BIN: activemq-artemis/artemis-distribution/target/apache-artemis-*-bin/apache-artemis-*
+        run: |
+          cp -r $ACTIVEMQ_ARTEMIS_BIN broker-nightly-image/apache-artemis-nightly-bin
+          docker build --tag broker-nightly-image:dev.latest broker-nightly-image
+
+      - name: Execute the operator test suite
+        uses: artemiscloud/activemq-artemis-operator-test-action@v1
+        with:
+          repository: 'https://github.com/brusdev/activemq-artemis-operator-test-suite.git'
+          ref: 'dev'
+          test-packages: 'test/smoke/basic/...'
+          docker-images: 'broker-nightly-image:dev.latest'
+          broker-image: 'broker-nightly-image:dev.latest'
+          broker-update-image: 'broker-nightly-image:dev.latest'
